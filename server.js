@@ -4,29 +4,19 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const ffmpegPath = require('ffmpeg-static');
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
-const app = express();
 const httpPort = 80;  // HTTP port
 const httpsPort = 443; // HTTPS port
+const ip = process.env.ip || 'localhost';
+const vlcStreamUrl = 'http://localhost:8080'; // Replace with your VLC stream URL
 
 const sslOptions = {
   key: fs.readFileSync(process.env.key), // Set in env file
   cert: fs.readFileSync(process.env.cert), // Set in env file
 };
 
-// VLC stream URL
-const vlcStreamUrl = 'http://localhost:8080'; // Replace with your VLC stream URL
-const connectedIPs = new Map(); // To store connected IP addresses and last activity time
-
-// Function to print currently connected IPs
-const printConnectedIPs = () => {
-  console.clear(); // Clear the terminal
-  console.log('Currently connected IPs:', Array.from(connectedIPs.keys()));
-};
-
-// Create HTTPS server
-const httpsServer = https.createServer(sslOptions, app);
+const app = express();
 
 // Create HTTP server
 const httpServer = http.createServer((req, res) => {
@@ -34,6 +24,17 @@ const httpServer = http.createServer((req, res) => {
   res.writeHead(301, { Location: `https://${req.headers.host}${req.url}` });
   res.end();
 });
+
+// Create HTTPS server
+const httpsServer = https.createServer(sslOptions, app);
+
+const connectedIPs = new Map(); // To store connected IP addresses and last activity time
+
+// Function to print currently connected IPs
+const printConnectedIPs = () => {
+  console.clear(); // Clear the terminal
+  console.log('Currently connected IPs:', Array.from(connectedIPs.keys()));
+};
 
 // Periodically check for inactive connections
 setInterval(() => {
@@ -108,10 +109,10 @@ app.get('/', (req, res) => {
 });
 
 // Start the servers
-httpServer.listen(httpPort, () => {
-  console.log(`HTTP server is running on http://localhost:${httpPort}`);
+httpServer.listen(httpPort, ip, () => {
+  console.log(`HTTP server is running on http://${ip}:${httpPort}`);
 });
 
-httpsServer.listen(httpsPort, () => {
-  console.log(`HTTPS server is running on https://localhost:${httpsPort}`);
+httpsServer.listen(httpsPort, ip, () => {
+  console.log(`HTTPS server is running on https://${ip}:${httpsPort}`);
 });
