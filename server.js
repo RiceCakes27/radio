@@ -6,10 +6,10 @@ const fs = require('fs');
 const ffmpegPath = require('ffmpeg-static');
 require('dotenv').config({ quiet: true });
 
-const httpPort = 80;  // HTTP port
-const httpsPort = 443; // HTTPS port
+const httpPort = process.env.httpPort || 80;  // HTTP port
+const httpsPort = process.env.httpsPort || 443; // HTTPS port
 const ip = process.env.ip || 'localhost';
-const vlcStreamUrl = 'http://localhost:8080'; // Replace with your VLC stream URL
+const vlcStreamUrl = process.env.streamUrl || 'http://localhost:8080'; // Replace with your VLC stream URL
 
 const sslOptions = {
   key: fs.readFileSync(process.env.key), // Set in env file
