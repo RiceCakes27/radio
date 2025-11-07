@@ -50,6 +50,8 @@ setInterval(() => {
   printConnectedIPs();
 }, 30000); // Run every 30 seconds
 
+app.set('trust proxy', true);
+
 // Middleware to track connected IPs and their activity
 app.use((req, res, next) => {
   const ip = req.ip || req.connection.remoteAddress;
@@ -93,6 +95,11 @@ app.get('/', (req, res) => {
   // Update last activity time whenever data is sent
   ffmpeg.stdout.on('data', () => {
     connectedIPs.set(req.normalizedIP, Date.now()); // Update activity time
+  });
+
+  ffmpeg.stderr.on("data", (data) => {
+    const msg = data.toString();
+    if (msg.match(/error/i)) console.error("[FFMPEG]", msg);
   });
 
   ffmpeg.stdout.pipe(res);
