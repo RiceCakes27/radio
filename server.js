@@ -29,11 +29,75 @@ const httpServer = http.createServer((req, res) => {
 const httpsServer = https.createServer(sslOptions, app);
 
 const connectedIPs = new Map(); // To store connected IP addresses and last activity time
+const activeStreams = new Set(); // Track active response streams
+
+// Shared FFmpeg instance
+let sharedFFmpeg = null;
+let ffmpegBuffer = []; // Buffer to store recent FFmpeg output
+const maxBufferSize = 10; // Keep last 10 chunks for new clients
 
 // Function to print currently connected IPs
 const printConnectedIPs = () => {
   console.clear(); // Clear the terminal
   console.log('Currently connected IPs:', Array.from(connectedIPs.keys()));
+  console.log('Active streams:', activeStreams.size);
+  console.log('FFmpeg running:', sharedFFmpeg !== null);
+};
+
+// Start shared FFmpeg instance
+const startFFmpeg = () => {
+  if (sharedFFmpeg) return; // Already running
+
+  console.log('Starting shared FFmpeg instance...');
+  
+  sharedFFmpeg = spawn(ffmpegPath, [
+    '-i', vlcStreamUrl,      // Input stream from VLC
+    '-f', 'mp3',             // Output format
+    '-ab', '128k',           // Audio bitrate
+    '-vn',                   // No video
+    'pipe:1'                 // Pipe the output to stdout
+  ]);
+
+  sharedFFmpeg.on('error', (err) => {
+    console.error('Error starting ffmpeg:', err);
+    sharedFFmpeg = null;
+  });
+
+  sharedFFmpeg.on('exit', (code) => {
+    console.log(`FFmpeg exited with code ${code}`);
+    sharedFFmpeg = null;
+    ffmpegBuffer = [];
+  });
+
+  sharedFFmpeg.stdout.on('data', (chunk) => {
+    // Add to buffer for new clients
+    ffmpegBuffer.push(chunk);
+    if (ffmpegBuffer.length > maxBufferSize) {
+      ffmpegBuffer.shift(); // Remove oldest chunk
+    }
+
+    // Broadcast to all active streams
+    activeStreams.forEach((stream) => {
+      if (!stream.destroyed && !stream.closed) {
+        stream.write(chunk);
+      }
+    });
+  });
+
+  sharedFFmpeg.stderr.on("data", (data) => {
+    const msg = data.toString();
+    if (msg.match(/error/i)) console.error("[FFMPEG]", msg);
+  });
+};
+
+// Stop shared FFmpeg instance
+const stopFFmpeg = () => {
+  if (!sharedFFmpeg) return;
+
+  console.log('Stopping shared FFmpeg instance...');
+  sharedFFmpeg.kill('SIGINT');
+  sharedFFmpeg = null;
+  ffmpegBuffer = [];
 };
 
 // Periodically check for inactive connections
@@ -66,7 +130,6 @@ app.use((req, res, next) => {
   connectedIPs.set(normalizedIP, Date.now());
   printConnectedIPs();
 
-  // We don't immediately remove the IP here to avoid premature deletion.
   next();
 });
 
@@ -77,41 +140,49 @@ app.get('/', (req, res) => {
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Connection', 'keep-alive'); // Keep the connection open
 
-  console.log('Starting stream...');
+  console.log(`New client connected: ${req.normalizedIP}`);
 
-  const ffmpeg = spawn(ffmpegPath, [
-    '-i', vlcStreamUrl,      // Input stream from VLC
-    '-f', 'mp3',             // Output format
-    '-ab', '128k',           // Audio bitrate
-    '-vn',                   // No video
-    'pipe:1'                 // Pipe the output to stdout
-  ]);
+  // Start FFmpeg if not already running
+  if (!sharedFFmpeg) {
+    startFFmpeg();
+  }
 
-  ffmpeg.on('error', (err) => {
-    console.error('Error starting ffmpeg:', err);
-    res.status(500).send('Error starting audio stream.');
+  // Send buffered data to new client (helps with immediate playback)
+  ffmpegBuffer.forEach((chunk) => {
+    if (!res.destroyed && !res.closed) {
+      res.write(chunk);
+    }
   });
 
-  // Update last activity time whenever data is sent
-  ffmpeg.stdout.on('data', () => {
-    connectedIPs.set(req.normalizedIP, Date.now()); // Update activity time
-  });
+  // Add this response stream to active streams
+  activeStreams.add(res);
+  printConnectedIPs();
 
-  ffmpeg.stderr.on("data", (data) => {
-    const msg = data.toString();
-    if (msg.match(/error/i)) console.error("[FFMPEG]", msg);
-  });
-
-  ffmpeg.stdout.pipe(res);
+  // Update activity time periodically while connected
+  const activityInterval = setInterval(() => {
+    connectedIPs.set(req.normalizedIP, Date.now());
+  }, 5000); // Update every 5 seconds
 
   // When the connection ends (due to client closing the stream)
   res.on('close', () => {
-    console.log('Client disconnected, stopping stream...');
-    ffmpeg.kill('SIGINT'); // Stop ffmpeg when client disconnects
-
-    // Delay removal of the IP to avoid premature deletions
+    console.log(`Client disconnected: ${req.normalizedIP}`);
+    
+    clearInterval(activityInterval);
+    activeStreams.delete(res);
     connectedIPs.delete(req.normalizedIP);
+    
+    // Stop FFmpeg if no more active streams
+    if (activeStreams.size === 0) {
+      stopFFmpeg();
+    }
+    
     printConnectedIPs();
+  });
+
+  res.on('error', (err) => {
+    console.error(`Stream error for ${req.normalizedIP}:`, err.message);
+    clearInterval(activityInterval);
+    activeStreams.delete(res);
   });
 });
 
@@ -122,4 +193,17 @@ httpServer.listen(httpPort, ip, () => {
 
 httpsServer.listen(httpsPort, ip, () => {
   console.log(`HTTPS server is running on https://${ip}:${httpsPort}`);
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('Shutting down gracefully...');
+  stopFFmpeg();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('Shutting down gracefully...');
+  stopFFmpeg();
+  process.exit(0);
 });
